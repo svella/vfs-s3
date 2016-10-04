@@ -75,14 +75,17 @@ public class S3FileProvider extends AbstractOriginatingFileProvider {
         final FileSystemOptions fsOptions = (fileSystemOptions != null) ? fileSystemOptions : getDefaultFileSystemOptions();
         final S3FileSystemConfigBuilder config = S3FileSystemConfigBuilder.getInstance();
 
-        final AWSCredentials awsCredentials = config.getAWSCredentials(fsOptions);
-
         AmazonS3Client service = config.getAmazonS3Client(fsOptions);
 
         if (service == null) {
+            AWSCredentials awsCredentials = config.getAWSCredentials(fsOptions);
             ClientConfiguration clientConfiguration = config.getClientConfiguration(fsOptions);
 
-            service = new AmazonS3Client(awsCredentials, clientConfiguration);
+            if (awsCredentials == null) {
+                service = new AmazonS3Client(clientConfiguration);
+            } else {
+                service = new AmazonS3Client(awsCredentials, clientConfiguration);
+            }
 
             String endpoint = config.getEndpoint(fsOptions);
             if (endpoint != null) {
