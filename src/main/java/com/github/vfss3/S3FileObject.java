@@ -17,6 +17,7 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.commons.vfs2.*;
 import org.apache.commons.vfs2.provider.AbstractFileName;
 import org.apache.commons.vfs2.provider.AbstractFileObject;
+import org.apache.commons.vfs2.provider.FileLockStrategyFactory;
 import org.apache.commons.vfs2.provider.LockByFileStrategyFactory;
 import org.apache.commons.vfs2.util.MonitorOutputStream;
 
@@ -29,16 +30,16 @@ import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.locks.Lock;
 
 import static com.amazonaws.services.s3.model.ObjectMetadata.AES_256_SERVER_SIDE_ENCRYPTION;
+import static com.github.vfss3.AmazonS3ClientHack.extractCredentials;
 import static com.github.vfss3.operations.Acl.Permission.READ;
 import static com.github.vfss3.operations.Acl.Permission.WRITE;
-import static com.github.vfss3.AmazonS3ClientHack.extractCredentials;
 import static java.nio.channels.Channels.newInputStream;
 import static java.util.Calendar.SECOND;
 import static org.apache.commons.vfs2.FileName.SEPARATOR;
 import static org.apache.commons.vfs2.NameScope.CHILD;
-import static org.apache.commons.vfs2.NameScope.FILE_SYSTEM;
 
 /**
  * Implementation of the virtual S3 file system object using the AWS-SDK.<p/>
@@ -59,6 +60,11 @@ public class S3FileObject extends AbstractFileObject {
     /** Amazon S3 object */
     private ObjectMetadata objectMetadata;
     private String objectKey;
+
+    /**
+     * Our own scurried away copy of the lock since AbstractFileObject keeps it scurried away
+     */
+    private final Lock fileLockStrategy;
 
     /**
      * True when content attached to file
@@ -88,7 +94,15 @@ public class S3FileObject extends AbstractFileObject {
 
     public S3FileObject(AbstractFileName fileName,
                         S3FileSystem fileSystem) throws FileSystemException {
-        super(fileName, fileSystem, (new LockByFileStrategyFactory()));
+        this(fileName, fileSystem, new LockByFileStrategyFactory());
+    }
+
+    @SuppressWarnings("unchecked")
+    private S3FileObject(AbstractFileName fileName,
+                         S3FileSystem fileSystem,
+                         FileLockStrategyFactory fileLockStrategyFactory) throws FileSystemException {
+        super(fileName, fileSystem, fileLockStrategyFactory);
+        fileLockStrategy = fileLockStrategyFactory.createLock();
     }
 
     @Override
@@ -181,6 +195,16 @@ public class S3FileObject extends AbstractFileObject {
         }
     }
 
+    void attachMetadata(String key, ObjectMetadata metadata) {
+        this.objectKey = key;
+        this.objectMetadata = metadata;
+        // Note that this is our own private variable and won't cause AbstractFileObject or anyone else
+        // to think that we're attached. The consequence of this is that the first call to attach() won't cause
+        // our doAttach() to actually do anything, and calls to detach() prior to that will not result in our
+        // doDetach() method getting called
+        attached = true;
+    }
+
     @Override
     protected void doDelete() throws Exception {
         getService().deleteObject(getBucket().getName(), objectKey);
@@ -255,46 +279,34 @@ public class S3FileObject extends AbstractFileObject {
         return FileType.FILE;
     }
 
+    /**
+     * Returns the children of the file. This completely replaces the implementation in AbstractFileObject
+     * because it deadlocks with concurrent calls to getParent() when using LockByFileStrategyFactory
+     * Also it caches child names and re-resolves each name individually when it uses the cached list and
+     * that is grossly inefficient for S3
+     * @return an array of FileObjects, one per child.
+     * @throws FileSystemException if an error occurs.
+     */
+    @Override
+    public FileObject[] getChildren() throws FileSystemException
+    {
+        fileLockStrategy.lock();
+
+        try {
+            doAttach();
+            return doListChildrenResolved();
+        } catch (final Exception exc) {
+            throw new FileSystemException("vfs.provider/list-children.error", exc, getName());
+        } finally {
+            fileLockStrategy.unlock();
+        }
+    }
+
     @Override
     protected String[] doListChildren() throws Exception {
-        String path = objectKey;
-        // make sure we add a '/' slash at the end to find children
-        if ((!"".equals(path)) && (!path.endsWith(SEPARATOR))) {
-            path = path + "/";
-        }
-
-        final ListObjectsRequest loReq = new ListObjectsRequest();
-        loReq.setBucketName(getBucket().getName());
-        loReq.setDelimiter("/");
-        loReq.setPrefix(path);
-
-        ObjectListing listing = getService().listObjects(loReq);
-        final List<S3ObjectSummary> summaries = new ArrayList<S3ObjectSummary>(listing.getObjectSummaries());
-        final Set<String> commonPrefixes = new TreeSet<String>(listing.getCommonPrefixes());
-        while (listing.isTruncated()) {
-            listing = getService().listNextBatchOfObjects(listing);
-            summaries.addAll(listing.getObjectSummaries());
-            commonPrefixes.addAll(listing.getCommonPrefixes());
-        }
-
-        List<String> childrenNames = new ArrayList<String>(summaries.size() + commonPrefixes.size());
-
-        // add the prefixes (non-empty subdirs) first
-        for (String commonPrefix : commonPrefixes) {
-            // strip path from name (leave only base name)
-            final String stripPath = commonPrefix.substring(path.length());
-            childrenNames.add(stripPath);
-        }
-
-        for (S3ObjectSummary summary : summaries) {
-            if (!summary.getKey().equals(path)) {
-                // strip path from name (leave only base name)
-                final String stripPath = summary.getKey().substring(path.length());
-                childrenNames.add(stripPath);
-            }
-        }
-
-        return childrenNames.toArray(new String[childrenNames.size()]);
+        // this should never get called since implemented doListChildrenResolved() and
+        // overrode getChildren()
+        return new String[0];
     }
 
     /**
@@ -332,23 +344,21 @@ public class S3FileObject extends AbstractFileObject {
 
         List<FileObject> resolvedChildren = new ArrayList<FileObject>(summaries.size() + commonPrefixes.size());
 
+        S3FileSystem fs = (S3FileSystem) getFileSystem();
+        FileSystemManager manager = fs.getFileSystemManager();
+
         // add the prefixes (non-empty subdirs) first
         for (String commonPrefix : commonPrefixes) {
             // strip path from name (leave only base name)
             String stripPath = commonPrefix.substring(path.length());
-            FileObject childObject = resolveFile(stripPath, (stripPath.equals("/")) ? FILE_SYSTEM : CHILD);
-
-            if ((childObject instanceof S3FileObject) && !stripPath.equals("/")) {
-                S3FileObject s3FileObject = (S3FileObject) childObject;
+            if (!stripPath.equals("/")) {
+                AbstractFileName childName = (AbstractFileName) manager.resolveName(getName(), stripPath, CHILD);
                 ObjectMetadata childMetadata = new ObjectMetadata();
                 childMetadata.setContentLength(0);
                 childMetadata.setContentType(
-                        Mimetypes.getInstance().getMimetype(s3FileObject.getName().getBaseName()));
+                        Mimetypes.getInstance().getMimetype(childName.getBaseName()));
                 childMetadata.setLastModified(new Date());
-                s3FileObject.objectMetadata = childMetadata;
-                s3FileObject.objectKey = commonPrefix;
-                s3FileObject.attached = true;
-                resolvedChildren.add(childObject);
+                resolvedChildren.add(fs.resolveChild(childName, commonPrefix, childMetadata));
             }
         }
 
@@ -356,20 +366,14 @@ public class S3FileObject extends AbstractFileObject {
             if (!summary.getKey().equals(path)) {
                 // strip path from name (leave only base name)
                 final String stripPath = summary.getKey().substring(path.length());
-                FileObject childObject = resolveFile(stripPath, CHILD);
-                if (childObject instanceof S3FileObject) {
-                    S3FileObject s3FileObject = (S3FileObject) childObject;
-                    ObjectMetadata childMetadata = new ObjectMetadata();
-                    childMetadata.setContentLength(summary.getSize());
-                    childMetadata.setContentType(
-                        Mimetypes.getInstance().getMimetype(s3FileObject.getName().getBaseName()));
-                    childMetadata.setLastModified(summary.getLastModified());
-                    childMetadata.setHeader(Headers.ETAG, summary.getETag());
-                    s3FileObject.objectMetadata = childMetadata;
-                    s3FileObject.objectKey = summary.getKey();
-                    s3FileObject.attached = true;
-                    resolvedChildren.add(s3FileObject);
-                }
+                AbstractFileName childName = (AbstractFileName) manager.resolveName(getName(), stripPath, CHILD);
+                ObjectMetadata childMetadata = new ObjectMetadata();
+                childMetadata.setContentLength(summary.getSize());
+                childMetadata.setContentType(
+                    Mimetypes.getInstance().getMimetype(childName.getBaseName()));
+                childMetadata.setLastModified(summary.getLastModified());
+                childMetadata.setHeader(Headers.ETAG, summary.getETag());
+                resolvedChildren.add(fs.resolveChild(childName, summary.getKey(), childMetadata));
             }
         }
 
