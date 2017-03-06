@@ -2,6 +2,7 @@ package com.intridea.io.vfs.provider.s3;
 
 import com.intridea.io.vfs.support.AbstractS3FileSystemTest;
 import org.apache.commons.vfs2.FileObject;
+import org.apache.commons.vfs2.FileSelector;
 import org.apache.commons.vfs2.FileSystemException;
 import org.apache.commons.vfs2.Selectors;
 import org.testng.annotations.AfterClass;
@@ -17,6 +18,7 @@ import java.util.List;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertTrue;
 
@@ -54,8 +56,9 @@ public class ConcurrentAccessTest extends AbstractS3FileSystemTest {
     @Test()
     public void testGetChildrenGetParentDeadlock() throws FileSystemException, InterruptedException {
         final FileObject parent = env.resolveFile("/concurrent/");
+        parent.delete(Selectors.EXCLUDE_SELF);
 
-        final int childCount = 10;
+        final int childCount = Integer.parseUnsignedInt(System.getProperty("ConcurrentAccessTest.deadlockTestChildCount", "10"));
         final int duration = Integer.parseUnsignedInt(System.getProperty("ConcurrentAccessTest.deadlockTestDuration", "5"));
         final long interval = Integer.parseUnsignedInt(System.getProperty("ConcurrentAccessTest.deadlockCheckInterval", "1000"));
 
@@ -99,7 +102,9 @@ public class ConcurrentAccessTest extends AbstractS3FileSystemTest {
                 public void run() {
                     while (!stopFlag.get()) {
                         try {
-                            parent.getChildren();
+                            final FileObject parent = env.resolveFile("/concurrent/");
+                            int count = parent.getChildren().length;
+                            assertEquals(count, childCount, "parent.getChildren().length");
                         } catch (FileSystemException e) {
                             e.printStackTrace();
                         }

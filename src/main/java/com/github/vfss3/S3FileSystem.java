@@ -3,10 +3,14 @@ package com.github.vfss3;
 import com.amazonaws.AmazonServiceException;
 import com.amazonaws.services.s3.AmazonS3;
 import com.amazonaws.services.s3.AmazonS3Client;
-import com.amazonaws.services.s3.model.*;
+import com.amazonaws.services.s3.model.Bucket;
+import com.amazonaws.services.s3.model.HeadBucketRequest;
+import com.amazonaws.services.s3.model.Region;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.commons.vfs2.*;
+import org.apache.commons.vfs2.Capability;
+import org.apache.commons.vfs2.FileObject;
+import org.apache.commons.vfs2.FileSystemException;
 import org.apache.commons.vfs2.provider.AbstractFileName;
 import org.apache.commons.vfs2.provider.AbstractFileSystem;
 
@@ -125,41 +129,4 @@ public class S3FileSystem extends AbstractFileSystem {
             throw new FileSystemException(e);
         }
     }
-
-    /**
-     * Custom resolveFile that can be safely used by S3FileObject.doListChildrenResolved() to avoid
-     * possible deadlock with AbstractFileObject.getParent().
-     * @param name The name of the file to locate.
-     * @param key The s3 object key.
-     * @param metadata The object metadata.
-     * @return The FileObject.
-     * @throws FileSystemException if an error occurs.
-     */
-    S3FileObject resolveChild(final AbstractFileName name, final String key, final ObjectMetadata metadata) throws FileSystemException
-    {
-        S3FileObject file;
-
-        synchronized (this) {
-            if (!getRootName().getRootURI().equals(name.getRootURI())) {
-                throw new FileSystemException("vfs.provider/mismatched-fs-for-name.error",
-                        name, getRootName(), name.getRootURI());
-            }
-
-            try {
-                // Note that we are always creating a new S3FileObject here and replacing any existing one in the cache.
-                // The good of this is that it is guaranteed to not be locked by anyone else yet and therefore not going
-                // to cause deadlock. The bad is that any existing S3FileObject that may still be referenced and used
-                // will no longer get automatically refreshed on resolve and we can end up with multiple out-of-sync copies
-                // floating around. I (svella) think this is an acceptable trade-off for avoiding deadlock while still being able
-                // to use per-file locking for better multi-threaded performance.
-                file = (S3FileObject) createFile(name);
-                file.attachMetadata(key, metadata);
-                putFileToCache(decorateFileObject(file));
-            } catch (final Exception e) {
-                throw new FileSystemException("vfs.provider/resolve-file.error", name, e);
-            }
-        }
-        return file;
-    }
-
 }
