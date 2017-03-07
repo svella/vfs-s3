@@ -151,5 +151,11 @@ public enum Capability
      * {@link org.apache.commons.vfs2.FileContent#getInputStream()}.
      * @since 2.0
      */
-    DIRECTORY_READ_CONTENT;
+    DIRECTORY_READ_CONTENT,
+
+    /**
+     * Supports per file thread locking
+     * @since 2.1.idauto1
+     */
+    PER_FILE_THREAD_LOCKING
 }

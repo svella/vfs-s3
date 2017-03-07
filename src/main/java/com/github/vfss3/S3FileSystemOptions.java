@@ -26,6 +26,7 @@ public class S3FileSystemOptions {
     private static final String MAX_UPLOAD_THREADS     = "maxUploadThreads";
     private static final String S3_CLIENT              = "S3Client";
     private static final String ENDPOINT               = "endpoint";
+    private static final String PER_FILE_LOCKING       = "perFileLocking";
 
     private static final int DEFAULT_MAX_UPLOAD_THREADS = 2;
     private static final int DEFAULT_MAX_ERROR_RETRY = 8;
@@ -209,6 +210,28 @@ public class S3FileSystemOptions {
     }
 
     /**
+     * Set per-file locking.
+     *
+     * @param perFileLocking true if per-file locking should be used.
+     */
+    public void setPerFileLocking(boolean perFileLocking) {
+        final S3FileSystemConfigBuilder builder = new S3FileSystemConfigBuilder();
+
+        builder.setOption(options, PER_FILE_LOCKING, perFileLocking);
+    }
+
+    /**
+     * @return true if per-file locking should be used.
+     * @see #setPerFileLocking(boolean)
+     */
+    public Optional<Boolean> getPerFileLocking() {
+        final S3FileSystemConfigBuilder builder = new S3FileSystemConfigBuilder();
+
+        return ofNullable((Boolean)builder.getOption(options, PER_FILE_LOCKING));
+    }
+
+
+    /**
      * Returns clone of options object for some legacy things.
      *
      * @return
@@ -216,6 +239,7 @@ public class S3FileSystemOptions {
     public FileSystemOptions toFileSystemOptions() {
         return (FileSystemOptions) options.clone();
     }
+
 
     /**
      * Utility class for exposing some config builder methods.

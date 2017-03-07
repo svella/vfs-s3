@@ -2,7 +2,6 @@ package com.intridea.io.vfs.provider.s3;
 
 import com.intridea.io.vfs.support.AbstractS3FileSystemTest;
 import org.apache.commons.vfs2.FileObject;
-import org.apache.commons.vfs2.FileSelector;
 import org.apache.commons.vfs2.FileSystemException;
 import org.apache.commons.vfs2.Selectors;
 import org.testng.annotations.AfterClass;
@@ -18,14 +17,14 @@ import java.util.List;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertTrue;
+import static org.testng.Assert.*;
 
 /**
  * @author <A href="mailto:alexey at abashev dot ru">Alexey Abashev</A>
  */
 public class ConcurrentAccessTest extends AbstractS3FileSystemTest {
+    static final Random random = new Random();
+
     @BeforeClass
     public void setUp() throws IOException {
         env.resolveFile("/concurrent/").createFolder();
@@ -33,7 +32,10 @@ public class ConcurrentAccessTest extends AbstractS3FileSystemTest {
 
     @Test(invocationCount = 200, threadPoolSize = 10)
     public void createFileOk() throws FileSystemException {
-        String fileName = "folder-" + (new Random()).nextInt(1000) + "/";
+        // was running into too many random collisions with random numbers in the range of 0-999
+        // so added thread id into the mix
+        String fileName = "folder-" + Thread.currentThread().getId() + "-" + (new Random()).nextInt(1000) + "/";
+        ;
 
         FileObject parent = env.resolveFile("/concurrent/");
         FileObject file = vfs.resolveFile(parent, fileName);
@@ -105,7 +107,7 @@ public class ConcurrentAccessTest extends AbstractS3FileSystemTest {
                             final FileObject parent = env.resolveFile("/concurrent/");
                             int count = parent.getChildren().length;
                             assertEquals(count, childCount, "parent.getChildren().length");
-                        } catch (FileSystemException e) {
+                        } catch (Throwable e) {
                             e.printStackTrace();
                         }
                     }

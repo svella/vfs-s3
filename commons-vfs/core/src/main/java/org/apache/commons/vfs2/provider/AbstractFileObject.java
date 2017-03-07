@@ -34,7 +34,6 @@ import java.security.PrivilegedActionException;
 import java.security.PrivilegedExceptionAction;
 import java.security.cert.Certificate;
 import java.util.*;
-import java.util.concurrent.locks.Lock;
 
 /**
  * A partial file object implementation.
@@ -76,7 +75,7 @@ public abstract class AbstractFileObject<AFS extends AbstractFileSystem> impleme
      */
     private FileOperations operations;
 
-    private final Lock fileLockStrategy;
+    private final Object monitorLock;
 
     /**
      *
@@ -87,14 +86,9 @@ public abstract class AbstractFileObject<AFS extends AbstractFileSystem> impleme
     protected AbstractFileObject(final AbstractFileName name,
                                  final AFS fs)
     {
-        this(name, fs, (new LockByFileSystemStrategyFactory<AFS>(fs))); // Default strategy - lock by fs
-    }
-
-    protected AbstractFileObject(AbstractFileName name, AFS fs, FileLockStrategyFactory fileLockStrategyFactory) {
         this.fileName = name;
         this.fs = fs;
-        this.fileLockStrategy = fileLockStrategyFactory.createLock();
-
+        monitorLock = fs.hasCapability(Capability.PER_FILE_THREAD_LOCKING) ? this : fs;
         fs.fileObjectHanded(this);
     }
 
@@ -151,10 +145,7 @@ public abstract class AbstractFileObject<AFS extends AbstractFileSystem> impleme
      */
     private void attach() throws FileSystemException
     {
-        fileLockStrategy.lock();
-
-        try
-        {
+        synchronized (monitorLock) {
             if (attached)
             {
                 return;
@@ -184,8 +175,6 @@ public abstract class AbstractFileObject<AFS extends AbstractFileSystem> impleme
             }
 
             // fs.fileAttached(this);
-        } finally {
-            fileLockStrategy.unlock();
         }
     }
 
@@ -351,9 +340,7 @@ public abstract class AbstractFileObject<AFS extends AbstractFileSystem> impleme
     @Override
     public void createFile() throws FileSystemException
     {
-        fileLockStrategy.lock();
-
-        try
+        synchronized (monitorLock)
         {
             try
             {
@@ -378,8 +365,6 @@ public abstract class AbstractFileObject<AFS extends AbstractFileSystem> impleme
             {
                 throw new FileSystemException("vfs.provider/create-file.error", fileName, e);
             }
-        } finally {
-            fileLockStrategy.unlock();
         }
     }
 
@@ -391,17 +376,18 @@ public abstract class AbstractFileObject<AFS extends AbstractFileSystem> impleme
     @Override
     public void createFolder() throws FileSystemException
     {
-        fileLockStrategy.lock();
-
-        try
-        {
+// causes deadlock with getChildren()/getParent() deadlock when using per file locking and doesn't really serve a purpose
+// for this section anyway
+//        synchronized (monitorLock)
+//        {
+            FileType type = getType();
             // VFS-210: we create a folder only if it does not already exist. So this check should be safe.
-            if (getType().hasChildren())
+            if (type.hasChildren())
             {
                 // Already exists as correct type
                 return;
             }
-            if (getType() != FileType.IMAGINARY)
+            if (type != FileType.IMAGINARY)
             {
                 throw new FileSystemException("vfs.provider/create-folder-mismatched-type.error", fileName);
             }
@@ -420,8 +406,11 @@ public abstract class AbstractFileObject<AFS extends AbstractFileSystem> impleme
                 parent.createFolder();
             }
 
+        synchronized (monitorLock)
+        {
             try
             {
+                attach();
                 // Create the folder
                 doCreateFolder();
 
@@ -436,8 +425,6 @@ public abstract class AbstractFileObject<AFS extends AbstractFileSystem> impleme
             {
                 throw new FileSystemException("vfs.provider/create-folder.error", fileName, exc);
             }
-        } finally {
-            fileLockStrategy.unlock();
         }
     }
 
@@ -527,9 +514,7 @@ public abstract class AbstractFileObject<AFS extends AbstractFileSystem> impleme
      */
     private boolean deleteSelf() throws FileSystemException
     {
-        fileLockStrategy.lock();
-
-        try
+        synchronized (monitorLock)
         {
             //Its possible to delete a read-only file if you have write-execute access to the directory
 
@@ -559,8 +544,6 @@ public abstract class AbstractFileObject<AFS extends AbstractFileSystem> impleme
             }
 
             return true;
-        } finally {
-            fileLockStrategy.unlock();
         }
     }
 
@@ -571,9 +554,7 @@ public abstract class AbstractFileObject<AFS extends AbstractFileSystem> impleme
      */
     private void detach() throws Exception
     {
-        fileLockStrategy.lock();
-
-        try
+        synchronized (monitorLock)
         {
             if (attached)
             {
@@ -593,8 +574,6 @@ public abstract class AbstractFileObject<AFS extends AbstractFileSystem> impleme
                     // children = null;
                 }
             }
-        } finally {
-            fileLockStrategy.unlock();
         }
     }
 
@@ -1144,9 +1123,7 @@ public abstract class AbstractFileObject<AFS extends AbstractFileSystem> impleme
     @Override
     public FileObject[] getChildren() throws FileSystemException
     {
-        fileLockStrategy.lock();
-
-        try
+        synchronized (monitorLock)
         {
             // VFS-210
             if (!fs.hasCapability(Capability.LIST_CHILDREN))
@@ -1233,8 +1210,6 @@ public abstract class AbstractFileObject<AFS extends AbstractFileSystem> impleme
             }
 
             return resolveFiles(children);
-        } finally {
-            fileLockStrategy.unlock();
         }
     }
 
@@ -1246,9 +1221,7 @@ public abstract class AbstractFileObject<AFS extends AbstractFileSystem> impleme
     @Override
     public FileContent getContent() throws FileSystemException
     {
-        fileLockStrategy.lock();
-
-        try
+        synchronized (monitorLock)
         {
             attach();
             if (content == null)
@@ -1256,8 +1229,6 @@ public abstract class AbstractFileObject<AFS extends AbstractFileSystem> impleme
                 content = doCreateFileContent();
             }
             return content;
-        } finally {
-            fileLockStrategy.unlock();
         }
     }
 
@@ -1449,24 +1420,24 @@ public abstract class AbstractFileObject<AFS extends AbstractFileSystem> impleme
             }
         }
 
-        fileLockStrategy.lock();
-
-        try
-        {
-            // Locate the parent of this file
-            if (parent == null)
-            {
-                FileName name = fileName.getParent();
-                if (name == null)
-                {
-                    return null;
-                }
-                parent = fs.resolveFile(name);
-            }
-            return parent;
-        } finally {
-            fileLockStrategy.unlock();
+        // do a dance to avoid possible deadlock between getParent() and getChildren() when using per file locking
+        FileObject localParent;
+        synchronized (monitorLock) {
+            localParent = parent;
         }
+        if (localParent == null)
+        {
+            FileName name = fileName.getParent();
+            if (name == null)
+            {
+                return null;
+            }
+            localParent = fs.resolveFile(name);
+            synchronized (monitorLock) {
+                parent = localParent;
+            }
+        }
+        return localParent;
     }
 
     /**
@@ -1528,9 +1499,7 @@ public abstract class AbstractFileObject<AFS extends AbstractFileSystem> impleme
     @Override
     public FileType getType() throws FileSystemException
     {
-        fileLockStrategy.lock();
-
-        try
+        synchronized (monitorLock)
         {
             attach();
 
@@ -1552,8 +1521,6 @@ public abstract class AbstractFileObject<AFS extends AbstractFileSystem> impleme
             }
 
             return type;
-        } finally {
-            fileLockStrategy.unlock();
         }
     }
 
@@ -1607,9 +1574,7 @@ public abstract class AbstractFileObject<AFS extends AbstractFileSystem> impleme
      */
     protected void handleCreate(final FileType newType) throws Exception
     {
-        fileLockStrategy.lock();
-
-        try
+        synchronized (monitorLock)
         {
             if (attached)
             {
@@ -1627,8 +1592,6 @@ public abstract class AbstractFileObject<AFS extends AbstractFileSystem> impleme
 
             // Notify the file system
             fs.fireFileCreated(this);
-        } finally {
-            fileLockStrategy.unlock();
         }
     }
 
@@ -1639,9 +1602,7 @@ public abstract class AbstractFileObject<AFS extends AbstractFileSystem> impleme
      */
     protected void handleDelete() throws Exception
     {
-        fileLockStrategy.lock();
-
-        try
+        synchronized (monitorLock)
         {
             if (attached)
             {
@@ -1658,8 +1619,6 @@ public abstract class AbstractFileObject<AFS extends AbstractFileSystem> impleme
 
             // Notify the file system
             fs.fireFileDeleted(this);
-        } finally {
-            fileLockStrategy.unlock();
         }
     }
 
@@ -2145,6 +2104,10 @@ public abstract class AbstractFileObject<AFS extends AbstractFileSystem> impleme
         {
             throw new FileSystemException("vfs.provider/set-writeable.error", fileName, exc);
         }
+    }
+
+    public Object getMonitorLock() {
+        return monitorLock;
     }
 
     /**
