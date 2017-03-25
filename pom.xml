@@ -7,7 +7,7 @@
     <groupId>com.github</groupId>
     <artifactId>vfs-s3</artifactId>
     <packaging>jar</packaging>
-    <version>2.4.2-idauto1</version>
+    <version>2.4.2-idauto2</version>
 
     <name>vfs-s3</name>
 
