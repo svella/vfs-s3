@@ -3,6 +3,7 @@ package com.github.vfss3;
 import com.amazonaws.ClientConfiguration;
 import com.amazonaws.services.s3.AmazonS3Client;
 import com.amazonaws.services.s3.model.Region;
+import com.intridea.io.vfs.provider.s3.S3FileSystemConfigBuilder;
 import org.apache.commons.vfs2.FileSystem;
 import org.apache.commons.vfs2.FileSystemConfigBuilder;
 import org.apache.commons.vfs2.FileSystemOptions;
@@ -27,6 +28,7 @@ public class S3FileSystemOptions {
     private static final String S3_CLIENT              = "S3Client";
     private static final String ENDPOINT               = "endpoint";
     private static final String PER_FILE_LOCKING       = "perFileLocking";
+    private static final String NO_BUCKET_TEST         = "noBucketTest";
 
     private static final int DEFAULT_MAX_UPLOAD_THREADS = 2;
     private static final int DEFAULT_MAX_ERROR_RETRY = 8;
@@ -239,6 +241,28 @@ public class S3FileSystemOptions {
     public FileSystemOptions toFileSystemOptions() {
         return (FileSystemOptions) options.clone();
     }
+
+    /**
+     * Set no bucket test
+     *
+     * @param noBucketTest true if bucket existence and access shouldn't be tested
+     */
+    public void setNoBucketTest(boolean noBucketTest) {
+        final S3FileSystemConfigBuilder builder = new S3FileSystemConfigBuilder();
+
+
+        builder.setOption(options, NO_BUCKET_TEST, noBucketTest);
+    }
+
+    /**
+     * @return true if bucket existence and access shouldn't be tested
+     */
+    public Optional<Boolean> getNoBucketTest() {
+        final S3FileSystemConfigBuilder builder = new S3FileSystemConfigBuilder();
+
+        return ofNullable((Boolean)builder.getOption(options, NO_BUCKET_TEST));
+    }
+
 
 
     /**
