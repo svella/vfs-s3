@@ -232,7 +232,15 @@ public class S3FileObject extends AbstractFileObject<S3FileSystem> {
     // should only be called when inputLock is locked
     private S3TempFile checkCacheFile(ObjectMetadata md) throws FileSystemException {
         if (cacheFile != null) {
-            if (md == null || md.getETag() == null || !md.getETag().equals(cacheFile.getETag())) {
+            // make sure file is still there and readable
+            boolean readable;
+            try (InputStream inputStream = cacheFile.getInputStream()){
+                readable = true;
+            } catch (IOException ignored) {
+                readable = false;
+            }
+            if (!readable || md == null || md.getETag() == null || !md.getETag().equals(cacheFile.getETag())) {
+//            if (md == null || md.getETag() == null || !md.getETag().equals(cacheFile.getETag())) {
                 // content has changed, let the cache file be deleted as soon as the last stream referencing it is closed
                 cacheFile.release();
                 cacheFile = null;

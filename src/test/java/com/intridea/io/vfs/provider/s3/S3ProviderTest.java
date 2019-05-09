@@ -18,6 +18,9 @@ import org.testng.annotations.Test;
 import java.io.*;
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.nio.file.DirectoryStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
@@ -552,6 +555,37 @@ public class S3ProviderTest extends AbstractS3FileSystemTest {
         FileObject[] files = testsDir.findFiles(SELECT_ALL);
         assertEquals(files.length, 1);
     }
+
+    @Test(dependsOnMethods={"createFileOk"})
+    public void localCacheMissing() throws IOException {
+        FileObject dest = env.resolveFile("/test-place/output.txt");
+
+        // Copy data
+        try (OutputStream os = dest.getContent().getOutputStream()) {
+            os.write(env.binaryFile().getBytes("US-ASCII"));
+        }
+
+        // verify data can be read
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(dest.getContent().getInputStream(), "US-ASCII"))) {
+            assertEquals(reader.readLine(), env.binaryFile());
+        }
+
+        // delete all local cache files
+        Path tempFile = Files.createTempFile("vfs.", ".s3");
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(tempFile.getParent(), "vfs.*.s3")) {
+            for (Path path : stream) {
+                Files.delete(path);
+            }
+        }
+        
+        // verify data can still be read
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(dest.getContent().getInputStream(), "US-ASCII"))) {
+            assertEquals(reader.readLine(), env.binaryFile());
+        }
+        
+        dest.delete();
+    }
+
 
     @AfterClass
     public void tearDown() throws FileSystemException {
